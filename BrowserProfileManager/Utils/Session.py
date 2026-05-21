@@ -1,4 +1,4 @@
-from ..Config.Settings import DEFAULT_BROWSER, BROWSER_PATHS
+from ..Config.Settings import DEFAULT_BROWSER, BROWSER_PATHS, SYSTEM_DEFAULT_PATHS
 from ..Scanners.BrowserScanner import BrowserScanner
 from .BrowserLauncher import BrowserLauncher
 import time
@@ -36,33 +36,45 @@ class BrowserSession:
     def start(self) -> str:
         """Starts the browser session and returns the CDP endpoint URL."""
         user_data_dir = BROWSER_PATHS.get(self.browser_name)
+        default_user_data_dir = SYSTEM_DEFAULT_PATHS.get(self.browser_name) or user_data_dir
         if not user_data_dir:
             raise ValueError(
                 f"Unknown browser: {self.browser_name}. "
                 f"Supported: {list(BROWSER_PATHS.keys())}"
             )
 
-        scanner = BrowserScanner(browser_name=self.browser_name, user_data_dir=user_data_dir)
+        # First scan the default system path to find the target profile metadata
+        scanner = BrowserScanner(browser_name=self.browser_name, user_data_dir=default_user_data_dir)
         result = scanner.scan()
         
-        # Check scan result BEFORE searching for profile
-        if not result.is_success:
-            raise RuntimeError(
-                f"Failed to scan {self.browser_name} profiles: {result.error_message}"
-            )
-        
-        target_profile = next((p for p in result.profiles if p.name == self.profile_name), None)
+        target_profile = None
+        if result.is_success:
+            target_profile = next((p for p in result.profiles if p.name == self.profile_name), None)
+            
+        # Fallback to scanning the automation directory if not found in the default directory
+        if not target_profile and user_data_dir != default_user_data_dir:
+            scanner = BrowserScanner(browser_name=self.browser_name, user_data_dir=user_data_dir)
+            result = scanner.scan()
+            if result.is_success:
+                target_profile = next((p for p in result.profiles if p.name == self.profile_name), None)
+
         if not target_profile:
-            available = [p.name for p in result.profiles]
+            # Gather all profiles we could find for a helpful error message
+            all_profiles = []
+            for path in set([default_user_data_dir, user_data_dir]):
+                sc = BrowserScanner(browser_name=self.browser_name, user_data_dir=path)
+                res = sc.scan()
+                if res.is_success:
+                    all_profiles.extend([p.name for p in res.profiles])
             raise ValueError(
                 f"Profile '{self.profile_name}' not found for {self.browser_name}. "
-                f"Available profiles: {available}"
+                f"Available profiles: {list(set(all_profiles))}"
             )
 
         self.launcher = BrowserLauncher(
             browser_name=self.browser_name,
             profile_id=target_profile.profile_id,
-            user_data_dir=scanner.user_data_dir,
+            user_data_dir=user_data_dir,
             port=self.port,
             extra_args=self.extra_args
         )

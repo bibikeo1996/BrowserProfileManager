@@ -9,6 +9,7 @@ import sys
 import threading
 from typing import Optional
 from pathlib import Path
+import shutil
 from BrowserProfileManager.Config.Settings import EXECUTABLE_PATHS
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,8 @@ class BrowserLauncher:
 
     def _read_devtools_active_port(self) -> Optional[int]:
         # Try Chrome's native file first (if it was created)
-        port_file = Path(self.user_data_dir) / "DevToolsActivePort"
+        target_dir = self.user_data_dir
+        port_file = Path(target_dir) / "DevToolsActivePort"
         if port_file.exists():
             try:
                 with open(port_file, "r") as f:
@@ -113,7 +115,7 @@ class BrowserLauncher:
                 logger.warning("Failed to read DevToolsActivePort: %s", e)
                 
         # Try our custom state file
-        bpm_file = Path(self.user_data_dir) / ".bpm_port"
+        bpm_file = Path(target_dir) / ".bpm_port"
         if bpm_file.exists():
             try:
                 with open(bpm_file, "r") as f:
@@ -126,7 +128,8 @@ class BrowserLauncher:
 
     def _write_bpm_port(self):
         try:
-            bpm_file = Path(self.user_data_dir) / ".bpm_port"
+            target_dir = self.user_data_dir
+            bpm_file = Path(target_dir) / ".bpm_port"
             with open(bpm_file, "w") as f:
                 f.write(str(self.port))
         except Exception as e:
@@ -203,6 +206,85 @@ class BrowserLauncher:
         self._find_target_ws_url(self.port, new_tag)
         return new_tag
 
+    def checkAndHandleFirstLogin(self, exec_path: str, user_data_dir: str, default_user_data_dir: str, profile_id: str):
+        """
+        Ensures the automation profile directory is properly set up.
+        On Windows, if it's the first run, opens Chrome interactively for the user to log in.
+        On macOS, automatically creates a symlink of the profile directory to load cookies instantly.
+        """
+        if user_data_dir == default_user_data_dir:
+            return
+
+        target_profile_dir = Path(user_data_dir) / profile_id
+        default_profile_dir = Path(default_user_data_dir) / profile_id
+
+        # 1. Windows: First-time login wizard
+        if sys.platform == "win32":
+            if not target_profile_dir.exists():
+                logger.info("Profile '%s' is being run for the first time in automation.", profile_id)
+                # Ensure user_data_dir parent exists
+                os.makedirs(user_data_dir, exist_ok=True)
+                
+                # Copy Local State from default path to preserve profile metadata / keys
+                default_local_state = Path(default_user_data_dir) / "Local State"
+                target_local_state = Path(user_data_dir) / "Local State"
+                if default_local_state.exists() and not target_local_state.exists():
+                    try:
+                        shutil.copy2(default_local_state, target_local_state)
+                        logger.info("Copied Local State from default profile path to preserve metadata.")
+                    except Exception as e:
+                        logger.warning("Could not copy Local State: %s", e)
+                
+                # Prompt the user with ASCII block
+                print("\n" + "=" * 80)
+                print(" " * 4 + "[ACTION REQUIRED: FIRST-TIME LOGIN]")
+                print(" " * 4 + f"An interactive browser window will open for profile directory: {profile_id}")
+                print(" " * 4 + "Please log in to your account inside the opened window.")
+                print(" " * 4 + "Once you have successfully logged in, CLOSE the browser window")
+                print(" " * 4 + "to automatically proceed with the automation flow.")
+                print(" " * 4 + "----------------------------------------------------------------")
+                print(" " * 4 + f"Tip: If you close the window early, delete this folder to retry:")
+                print(" " * 4 + f"     {target_profile_dir}")
+                print("=" * 80 + "\n")
+                
+                # Run browser interactively (blocking call)
+                args = [
+                    exec_path,
+                    f"--user-data-dir={user_data_dir}",
+                    f"--profile-directory={profile_id}",
+                    "--no-first-run",
+                    "--no-default-browser-check"
+                ]
+                try:
+                    subprocess.run(args, check=False)
+                except Exception as e:
+                    logger.error("Failed to run interactive browser session: %s", e)
+                
+                logger.info("Interactive login window closed. Continuing to automation...")
+
+        # 2. macOS: Symlink creation
+        elif sys.platform == "darwin":
+            if default_profile_dir.exists():
+                os.makedirs(user_data_dir, exist_ok=True)
+                
+                # Copy Local State
+                default_local_state = Path(default_user_data_dir) / "Local State"
+                target_local_state = Path(user_data_dir) / "Local State"
+                if default_local_state.exists() and not target_local_state.exists():
+                    try:
+                        shutil.copy2(default_local_state, target_local_state)
+                        logger.info("Copied Local State to automation folder.")
+                    except Exception as e:
+                        logger.warning("Could not copy Local State on macOS: %s", e)
+                
+                # Symlink target profile dir if it doesn't exist
+                if not target_profile_dir.exists() and not target_profile_dir.is_symlink():
+                    try:
+                        os.symlink(str(default_profile_dir), str(target_profile_dir))
+                        logger.info("Created profile symlink on macOS: %s -> %s", target_profile_dir, default_profile_dir)
+                    except Exception as e:
+                        logger.warning("Failed to create symlink: %s", e)
+
     def launch(self, kill_existing: bool = True) -> str:
         """Launches the browser and returns the HTTP endpoint URL. Wait for specific tab to be ready."""
         if kill_existing:
@@ -211,8 +293,15 @@ class BrowserLauncher:
         exec_path = self._get_executable_path()
         if not os.path.exists(exec_path):
             raise FileNotFoundError(f"{self.browser_name} executable not found at: {exec_path}.")
+            
+        from BrowserProfileManager.Config.Settings import SYSTEM_DEFAULT_PATHS
+        default_user_data_dir = SYSTEM_DEFAULT_PATHS.get(self.browser_name, self.user_data_dir)
+        
+        # Ensure first-time login or symlinks are handled before running the browser with CDP
+        self.checkAndHandleFirstLogin(exec_path, self.user_data_dir, default_user_data_dir, self.profile_id)
         
         import uuid
+        import sys
         self.session_tag = str(uuid.uuid4())
         tag_url = f"data:text/html,<title>bpm-tag-{self.session_tag}</title>"
         
@@ -328,3 +417,5 @@ class BrowserLauncher:
                     finally:
                         BrowserLauncher._master_process = None
                         logger.info("Browser master process terminated.")
+
+                pass
