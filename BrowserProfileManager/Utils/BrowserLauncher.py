@@ -59,13 +59,12 @@ class BrowserLauncher:
     _master_process = None
     _lock = threading.Lock()
     
-    def __init__(self, browser_name: str, profile_id: str, user_data_dir, port: int = 0, extra_args: list = None):
+    def __init__(self, browser_name: str, user_data_dir, port: int = 0, extra_args: list = None):
         self._killed = False
         with BrowserLauncher._lock:
             BrowserLauncher._active_sessions += 1
             
         self.browser_name = browser_name
-        self.profile_id = profile_id
         self.user_data_dir = str(user_data_dir)
         self.extra_args = extra_args or []
         self.port = port if port != 0 else self._get_free_port()
@@ -177,7 +176,7 @@ class BrowserLauncher:
             args = [
                 exec_path,
                 f"-profile",
-                f"{self.user_data_dir}/{self.profile_id}",
+                f"{self.user_data_dir}",
                 f"-remote-debugging-port", str(self.port),
                 "-no-remote",
                 tag_url
@@ -187,10 +186,12 @@ class BrowserLauncher:
                 exec_path,
                 f"--remote-debugging-port={self.port}",
                 f"--user-data-dir={self.user_data_dir}",
-                f"--profile-directory={self.profile_id}",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--remote-allow-origins=*",
+                "--password-store=basic",
+                "--disable-blink-features=AutomationControlled",
+                "--test-type",
                 tag_url
             ]
             
@@ -204,6 +205,20 @@ class BrowserLauncher:
         return new_tag
 
     def launch(self, kill_existing: bool = True) -> str:
+        """Launches the browser with a resilient retry mechanism."""
+        max_retries = 1
+        for attempt in range(max_retries + 1):
+            try:
+                return self._launch_internal(kill_existing=(kill_existing or attempt > 0))
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.warning("Launch attempt %d failed: %s. Force killing and retrying...", attempt + 1, e)
+                    ForceKillBrowser(self.browser_name)
+                    time.sleep(2)
+                else:
+                    raise e
+
+    def _launch_internal(self, kill_existing: bool = True) -> str:
         """Launches the browser and returns the HTTP endpoint URL. Wait for specific tab to be ready."""
         if kill_existing:
             self._kill_existing_instances()
@@ -220,7 +235,7 @@ class BrowserLauncher:
             args = [
                 exec_path,
                 f"-profile",
-                f"{self.user_data_dir}/{self.profile_id}",
+                f"{self.user_data_dir}",
                 f"-remote-debugging-port", str(self.port),
                 "-no-remote",
                 tag_url
@@ -230,17 +245,19 @@ class BrowserLauncher:
                 exec_path,
                 f"--remote-debugging-port={self.port}",
                 f"--user-data-dir={self.user_data_dir}",
-                f"--profile-directory={self.profile_id}",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--remote-allow-origins=*",
+                "--password-store=basic",
+                "--disable-blink-features=AutomationControlled",
+                "--test-type",
                 tag_url
             ]
         
         if self.extra_args:
             args.extend(self.extra_args)
         
-        logger.info("Launching %s on port %d with profile '%s'", self.browser_name, self.port, self.profile_id)
+        logger.info("Launching %s on port %d with isolated profile at '%s'", self.browser_name, self.port, self.user_data_dir)
         
         try:
             process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

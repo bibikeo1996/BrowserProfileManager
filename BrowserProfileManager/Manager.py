@@ -56,9 +56,18 @@ class ProfileManager:
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close_all()
-        if self.playwright_context:
-            self.playwright_context.__exit__(exc_type, exc_val, exc_tb)
+        try:
+            self.close_all()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Error in close_all: %s", e)
+        finally:
+            if self.playwright_context:
+                try:
+                    self.playwright_context.__exit__(exc_type, exc_val, exc_tb)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning("Error exiting playwright: %s", e)
             
     def get_profile(self, profile_id: str, browser_name: str = "Chrome") -> ManagedProfile:
         """
@@ -73,5 +82,9 @@ class ProfileManager:
     def close_all(self):
         """Closes all active profiles managed by this instance."""
         for profile in self.profiles.values():
-            profile.close()
+            try:
+                profile.close()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Error closing profile: %s", e)
         self.profiles.clear()

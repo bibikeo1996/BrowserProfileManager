@@ -1,6 +1,6 @@
-from ..Config.Settings import DEFAULT_BROWSER, BROWSER_PATHS
-from ..Scanners.BrowserScanner import BrowserScanner
+from ..Config.Settings import DEFAULT_BROWSER, AUTOMATION_PROFILES_DIR
 from .BrowserLauncher import BrowserLauncher
+from pathlib import Path
 import time
 import socket
 import logging
@@ -35,34 +35,17 @@ class BrowserSession:
 
     def start(self) -> str:
         """Starts the browser session and returns the CDP endpoint URL."""
-        user_data_dir = BROWSER_PATHS.get(self.browser_name)
-        if not user_data_dir:
-            raise ValueError(
-                f"Unknown browser: {self.browser_name}. "
-                f"Supported: {list(BROWSER_PATHS.keys())}"
-            )
-
-        scanner = BrowserScanner(browser_name=self.browser_name, user_data_dir=user_data_dir)
-        result = scanner.scan()
+        profile_dir = Path(AUTOMATION_PROFILES_DIR) / self.profile_name
         
-        # Check scan result BEFORE searching for profile
-        if not result.is_success:
+        if not profile_dir.exists():
             raise RuntimeError(
-                f"Failed to scan {self.browser_name} profiles: {result.error_message}"
-            )
-        
-        target_profile = next((p for p in result.profiles if p.name == self.profile_name), None)
-        if not target_profile:
-            available = [p.name for p in result.profiles]
-            raise ValueError(
-                f"Profile '{self.profile_name}' not found for {self.browser_name}. "
-                f"Available profiles: {available}"
+                f"Profile '{self.profile_name}' chưa được thiết lập.\n"
+                f"Vui lòng gọi hàm setup_automation_profile('{self.profile_name}', '{self.browser_name}') trước khi chạy tự động hóa!"
             )
 
         self.launcher = BrowserLauncher(
             browser_name=self.browser_name,
-            profile_id=target_profile.profile_id,
-            user_data_dir=scanner.user_data_dir,
+            user_data_dir=str(profile_dir),
             port=self.port,
             extra_args=self.extra_args
         )

@@ -3,6 +3,7 @@ import sys
 
 DEFAULT_BROWSER = "Chrome"
 DEFAULT_PROFILE_NAME = "GoogleFlow"
+AUTOMATION_PROFILES_DIR = os.path.join(os.getcwd(), ".automation_profiles")
 
 if sys.platform == "win32":
     BROWSER_PATHS = {
