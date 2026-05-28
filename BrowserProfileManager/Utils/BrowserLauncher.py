@@ -67,6 +67,7 @@ class BrowserLauncher:
             
         self.browser_name = browser_name
         self.user_data_dir = str(user_data_dir)
+        self.profile_id = "Default"
         self.extra_args = extra_args or []
         self.port = port if port != 0 else self._get_free_port()
         self.target_ids = []
@@ -305,6 +306,40 @@ class BrowserLauncher:
         if kill_existing:
             self._kill_existing_instances()
         
+        # Clean up stale lock files from previous crashes/forced kills
+        try:
+            # 1. Clean up in parent User Data Directory
+            parent_path = Path(self.user_data_dir)
+            for name in ["DevToolsActivePort", ".bpm_port"]:
+                file_path = parent_path / name
+                if file_path.exists() or file_path.is_symlink():
+                    try:
+                        file_path.unlink()
+                        logger.info("Cleaned up stale parent file: %s", name)
+                    except Exception as e:
+                        logger.warning("Failed to remove stale parent file %s: %s", name, e)
+
+            # 2. Clean up in specific Profile Directory
+            profile_paths = [parent_path / self.profile_id]
+            if self.profile_id != "Default":
+                profile_paths.append(parent_path / "Default")
+                
+            for profile_path in profile_paths:
+                if profile_path.exists() and profile_path.is_dir():
+                    for name in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
+                        file_path = profile_path / name
+                        if file_path.exists() or file_path.is_symlink():
+                            try:
+                                if file_path.is_dir() and not file_path.is_symlink():
+                                    shutil.rmtree(file_path)
+                                else:
+                                    file_path.unlink()
+                                logger.info("Cleaned up stale profile lock: %s/%s", profile_path.name, name)
+                            except Exception as e:
+                                logger.warning("Failed to remove stale profile lock %s/%s: %s", profile_path.name, name, e)
+        except Exception as e:
+            logger.warning("Error cleaning up stale Chrome lock files: %s", e)
+            
         exec_path = self._get_executable_path()
         if not os.path.exists(exec_path):
             raise FileNotFoundError(f"{self.browser_name} executable not found at: {exec_path}.")
